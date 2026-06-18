@@ -1,0 +1,16 @@
+{
+  "name": "fvthlp",
+  "version": "1.0.0",
+  "description": "FFmpeg Video Transform Helper",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "fvthlp": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.7.0"
+  }
+}
