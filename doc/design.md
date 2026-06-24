@@ -1,6 +1,6 @@
 # fvthlp (FFmpeg Video Transform Helper) 技术方案设计文档
 
-`fvthlp` 是一个基于 **Bun.js** 构建的命令行辅助工具，旨在为用户提供快速、便捷的视频转码参数配置体验。它接收一个视频文件路径作为输入，通过交互式命令行界面（CLI）引导用户配置转码参数（分辨率、视频 preset、CRF、音频转码等），并最终生成一条经过优化的 `ffmpeg` 命令行，供用户直接复制执行。
+`fvthlp` 是一个基于 **Bun.js** 构建的命令行辅助工具，旨在为用户提供快速、便捷的视频转码参数配置体验。它接收一个视频 file 路径作为输入，通过交互式命令行界面（CLI）引导用户配置转码参数（分辨率、视频 preset、CRF/CQ、音频转码等），并最终生成一条经过优化的 `ffmpeg` 命令行，供用户直接复制执行。
 
 ---
 
@@ -37,16 +37,25 @@
 
 ```mermaid
 graph TD
-    A[启动脚本并解析参数] --> B{参数中是否有视频文件?}
+    A[启动脚本并解析参数] --> B{参数中是否有视频 file?}
     B -- 无 --> C[打印使用帮助并终止]
     B -- 有 --> D{系统是否存在 ffmpeg/ffprobe?}
     D -- 否 --> E[提示未安装并终止]
     D -- 是 --> F[执行 ffprobe 获取视频/音频元数据]
-    F --> G[打印简要的音视频元数据信息]
+    F --> G[打印简要的音视频元数据信息 (含视频码率)]
     G --> H[交互 1: 选择目标分辨率]
-    H --> I[交互 2: 选择 x264 Preset]
-    I --> J[交互 3: 选择转码 CRF 值]
-    J --> K[交互 4: 决定音频转码策略]
+    H --> I[交互 2: 选择视频编码格式 H.264 / AV1]
+    I --> J1{选择 H.264?}
+    J1 -- 是 --> J2[交互 3a: 选择 x264 Preset]
+    J2 --> J3[交互 3b: 选择 CRF 值]
+    J1 -- 否 (AV1) --> J4{系统支持 NVIDIA AV1 硬件编码 av1_nvenc?}
+    J4 -- 是 --> J5[交互 3c: 选择 NVENC Preset p1-p7]
+    J5 --> J6[交互 3d: 选择 CQ 值]
+    J4 -- 否 --> J7[交互 3e: 选择 SVT-AV1 Preset 4-8]
+    J7 --> J8[交互 3f: 选择 CRF 值]
+    J3 --> K[交互 4: 决定音频转码策略]
+    J6 --> K
+    J8 --> K
     K --> L[生成随机构建的目标输出文件名]
     L --> M[拼装并输出最终 ffmpeg 命令行]
 ```
@@ -70,14 +79,14 @@ async function checkFFmpeg() {
 
 ### 2.2 视频信息提取与展示
 使用 `ffprobe` 获取媒体元数据。我们可以通过解析 stdout 的 JSON 来快速获取核心信息：
-* **视频流信息** (`codec_name`, `width`, `height`, `pix_fmt`)
+* **视频流信息** (`codec_name`, `width`, `height`, `pix_fmt`, `bit_rate`)
 * **音频流信息** (`codec_name`, `bit_rate`, `sample_rate`, `channels`)
 * **简要展示面板效果示例**：
   ```bash
   ┌  fvthlp - 视频信息
   │  文件: input.mp4 (45.2 MB)
-  │  视频: h264 | 1920x1080 | 23.97 fps
-  │  音频: aac | 128 kbps | 2 ch
+  │  视频: H264 | 1920x1080 | 23.97 fps | 2150 kbps
+  │  音频: AAC | 128 kbps | 2 ch | 48000 Hz
   └
   ```
 
@@ -96,26 +105,46 @@ async function checkFFmpeg() {
   * **原视频为横屏 ($W > H$)**：高度 $H$ 为窄边。将高度固定为目标分辨率 $T$，宽度自适应。
     * **FFmpeg 参数**：`-vf "scale=-2:T"` (例如选择 720P 时，参数为 `-vf "scale=-2:720"`)
 
-#### 2) x264 Preset (编码预设速度)
-* **选项**：`ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium` (默认选中), `slow`, `slower`, `veryslow`。
-* **核心规则**：CLI 交互中默认将光标定位在 `medium` 上。
-* **FFmpeg 参数映射**：`-preset <selected_preset>`。
+#### 2) 视频编码格式与编码器选择 (Video Codec)
+* **选项**：
+  * `H.264` (默认，最兼容)
+  * `AV1` (更高压缩效率，新一代格式)
+* **编码器与显示判定逻辑**：
+  * 系统检测是否存在 NVIDIA 显卡（检查是否支持 `h264_nvenc` / `hevc_nvenc`）：
+    * **若系统有 NVIDIA 显卡，但该显卡不支持 AV1 编码**：直接不展示 AV1 选项。
+    * **若系统有 NVIDIA 显卡，且该显卡支持 AV1 硬件编码**：使用 `av1_nvenc` 编码器。
+    * **若系统没有 NVIDIA 显卡（如 Mac），但支持 CPU AV1 编码**：展示 AV1 选项，但明确提示“CPU转码很慢，不推荐”。
 
-#### 3) CRF 选取 (质量因子)
-* **设计**：提供一组常用推荐值（或允许用户自定义输入 0-51 之间的数字）。为了在保证基本画质的同时使文件体积尽量小，**工具会根据第 1 步所选择的分辨率，动态设定默认的 CRF 推荐值**：
-  * 若选择 **Keep Original** 或 **1080P**：默认选中 **`23`**（标准/主流平衡）。
-  * 若选择 **720P**：默认选中 **`22`**（稍微调低 CRF 以维持中等分辨率的画质细节）。
-  * 若选择 **480P**：默认选中 **`20`**（低分辨率下更低的 CRF 能够有效防止严重的马赛克与色块）。
-* **选项列表**：
-  * `18` (高画质，文件较大)
-  * `20` (480P 推荐)
-  * `22` (720P 推荐)
-  * `23` (1080P/原画 推荐)
-  * `26` (较低画质，超小体积)
-  * `自定义` (用户手动输入)
-* **FFmpeg 参数映射**：`-crf <crf_value>`。
+#### 3) 编码预设速度 (Preset Selection)
+* **H.264 (`libx264`) 选项**：`ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium` (默认), `slow`, `slower`, `veryslow`。
+  * **FFmpeg 参数**：`-preset <selected_preset>`
+* **NVIDIA AV1 (`av1_nvenc`) 选项**：`p1` (最快), `p2`, `p3`, `p4`, `p5` (默认), `p6`, `p7` (最慢/最高质量)。
+  * **FFmpeg 参数**：`-preset <selected_preset>`
+* **CPU AV1 (`libsvtav1`) 选项**：`4` (慢/高质量), `5`, `6` (默认/中等), `7`, `8` (快/低效率)。
+  * **FFmpeg 参数**：`-preset <selected_preset>`
 
-#### 4) 音频转码策略 (Audio Transcode)
+#### 4) 质量因子选取 (CRF / CQ)
+根据选择 of 视频分辨率，动态设定默认的质量推荐值：
+* **H.264 (`libx264`) - 采用 CRF 模式**：
+  * Keep Original / 1080P: 默认 **`23`**
+  * 720P: 默认 **`22`**
+  * 480P: 默认 **`20`**
+  * **选项**：`18`, `20`, `22`, `23`, `26`, `自定义(0-51)`
+  * **FFmpeg 参数**：`-crf <crf_value>`
+* **NVIDIA AV1 (`av1_nvenc`) - 采用 VBR + CQ 模式**：
+  * Keep Original / 1080P: 默认 **`36`**
+  * 720P: 默认 **`34`**
+  * 480P: 默认 **`32`**
+  * **选项**：`30`, `33`, `36`, `38`, `42`, `自定义(0-51)`
+  * **FFmpeg 参数**：`-rc:v vbr -cq:v <cq_value> -tune hq -b:v 0`
+* **CPU AV1 (`libsvtav1`) - 采用 CRF 模式**：
+  * Keep Original / 1080P: 默认 **`28`**
+  * 720P: 默认 **`25`**
+  * 480P: 默认 **`22`**
+  * **选项**：`20`, `22`, `25`, `28`, `32`, `自定义(0-51)`
+  * **FFmpeg 参数**：`-crf <crf_value>`
+
+#### 5) 音频转码策略 (Audio Transcode)
 * **核心规则**：
   * 若原音频编码为 `aac` **且** 码率 `< 150 kbps`，则**自动选择** `copy`（参数：`-c:a copy`，无损复制，不重新编码，并跳过或在提示中指出已自动选取 copy）。
   * 若**不满足**上述条件（例如音频不是 `aac`，或者虽然是 `aac` 但码率 $\ge$ 150 kbps），则**交互式提示用户选择音频处理方式，并默认选中/推荐 `Transcode to AAC (128k)`**。
@@ -124,7 +153,7 @@ async function checkFFmpeg() {
   * `Copy` (参数：`-c:a copy`)
   * `Transcode to AAC (192k)` (参数：`-c:a aac -b:a 192k`)
 
-#### 5) 帧率调整策略 (FPS Adjustment)
+#### 6) 帧率调整策略 (FPS Adjustment)
 * **核心规则**：
   * **原视频帧率 $\le 30$ fps**：自动保持不变，在生成的 `ffmpeg` 转码指令中**不指定** `-r` 参数。
   * **原视频帧率 $> 30$ fps**（如 60 fps）：为减小体积并提升全终端兼容性，**自动将其降低至 30 fps**，在生成的转码指令中增加 `-r 30` 参数。
@@ -153,24 +182,24 @@ async function checkFFmpeg() {
 
 ## 3. 生成的 FFmpeg 命令行规范
 
-脚本根据用户的选择拼装参数，最终拼装出的命令行样例如下：
+脚本根据用户的选择拼装参数。为了方便复制，**最终生成的 FFmpeg 命令行将放置在整个程序运行的最末尾，完全独立，并且不带任何 ANSI 颜色或提示字符**。
 
-* **原视频为横屏（如 1920x1080），转码为 720P，原视频帧率 60 fps，音频不满足 copy 条件需转码：**
+拼装出的命令行样例如下：
+
+* **H.264 编码示例：原视频为横屏（如 1920x1080），转码为 720P，原视频帧率 60 fps，音频转码为 128k：**
   ```bash
   ffmpeg -i input.mp4 -c:v libx264 -preset medium -crf 22 -vf "scale=-2:720" -r 30 -c:a aac -b:a 128k 2606181741_abyx.mp4
   ```
 
-* **原视频为移动端竖屏（如 1080x1920），转码为 720P，原视频帧率 25 fps，音频自动 copy：**
+* **NVIDIA AV1 编码示例：支持 N 卡，转码为 720P，音频 copy 模式：**
   ```bash
-  ffmpeg -i input.mp4 -c:v libx264 -preset medium -crf 22 -vf "scale=720:-2" -c:a copy 2606181741_abyx.mp4
+  ffmpeg -hwaccel cuda -i input.mp4 -c:v av1_nvenc -preset p5 -cq:v 36 -tune hq -b:v 0 -vf "scale=-2:720" -c:a copy 2606181741_abyx.mp4
   ```
 
-* **原视频帧率 24 fps（帧率 $\le 30$ 不指定 `-r`，原分辨率保持不变），音频转码为 128k：**
+* **CPU AV1 编码示例：不支持 N 卡，转码为 1080P，音频转码为 128k：**
   ```bash
-  ffmpeg -i input.mp4 -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k 2606181741_abyx.mp4
+  ffmpeg -i input.mp4 -c:v libsvtav1 -preset 6 -crf 28 -vf "scale=-2:1080" -c:a aac -b:a 128k 2606181741_abyx.mp4
   ```
-
-> **注意**：转码的视频编码固定使用 `libx264`，音频重编码使用 `aac`。
 
 ---
 
