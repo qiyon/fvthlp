@@ -13,7 +13,7 @@
 * **理由**：
   * **极速启动**：Bun 的启动速度远快于 Node.js，非常适合 CLI 工具。
   * **开箱即用**：原生支持 TypeScript，无需配置 `tsconfig.json` 或构建步骤即可直接运行。
-  * **高效的子进程 API**：`Bun.$` 或 `Bun.spawn` 提供了现代、类型安全且高效的子进程执行方式，便于调用 `ffmpeg` 和 `ffprobe`。
+  * **高效的子进程 API**：`Bun.$` 或 `Bun.spawn` 提供了现代、类型安全且高效 of 子进程执行方式，便于调用 `ffmpeg` 和 `ffprobe`。
 
 ### 1.2 终端交互库 (Terminal Interactive Library)
 我们评估了以下几个流行的终端交互库：
@@ -44,14 +44,17 @@ graph TD
     D -- 是 --> F[执行 ffprobe 获取视频/音频元数据]
     F --> G[打印简要的音视频元数据信息 (含视频码率)]
     G --> H[交互 1: 选择目标分辨率]
-    H --> I[交互 2: 选择视频编码格式 H.264 / AV1]
+    H --> I[交互 2: 选择视频编码格式与编码器]
     I --> J1{选择 H.264?}
     J1 -- 是 --> J2[交互 3a: 选择 x264 Preset]
     J2 --> J3[交互 3b: 选择 CRF 值]
-    J1 -- 否 (AV1) --> J4{系统支持 NVIDIA AV1 硬件编码 av1_nvenc?}
-    J4 -- 是 --> J5[交互 3c: 选择 NVENC Preset p1-p7]
+    I -- 选择 NVIDIA AV1 --> J4{本地支持 av1_nvenc?}
+    J4 -- 否 --> J4w[选择时提示不支持但允许继续]
+    J4 -- 是 --> J5
+    J4w --> J5[交互 3c: 选择 NVENC Preset p1-p7]
     J5 --> J6[交互 3d: 选择 CQ 值]
-    J4 -- 否 --> J7[交互 3e: 选择 SVT-AV1 Preset 4-8]
+    I -- 选择 CPU AV1 --> J7w[选择时明确提示很慢不推荐]
+    J7w --> J7[交互 3e: 选择 CPU AV1 Preset]
     J7 --> J8[交互 3f: 选择 CRF 值]
     J3 --> K[交互 4: 决定音频转码策略]
     J6 --> K
@@ -107,24 +110,24 @@ async function checkFFmpeg() {
 
 #### 2) 视频编码格式与编码器选择 (Video Codec)
 * **选项**：
-  * `H.264` (默认，最兼容)
-  * `AV1` (更高压缩效率，新一代格式)
+  * `H.264` (默认，最兼容，使用 `libx264`)
+  * `AV1 (NVIDIA av1_nvenc)` (NVIDIA GPU 硬件加速编码器)
+  * `AV1 (CPU encoder)` (SVT-AV1 或 libaom-av1 软件编码器)
 * **编码器与显示判定逻辑**：
-  * 系统检测是否存在 NVIDIA 显卡（检查是否支持 `h264_nvenc` / `hevc_nvenc`）：
-    * **若系统有 NVIDIA 显卡，但该显卡不支持 AV1 编码**：直接不展示 AV1 选项。
-    * **若系统有 NVIDIA 显卡，且该显卡支持 AV1 硬件编码**：使用 `av1_nvenc` 编码器。
-    * **若系统没有 NVIDIA 显卡（如 Mac），但支持 CPU AV1 编码**：展示 AV1 选项，但明确提示“CPU转码很慢，不推荐”。
+  * 所有的编码选项均在交互菜单中展示（包含 NVIDIA `av1_nvenc`，即使本地未检测到硬件支持），方便用户为其他设备生成转换参数。
+  * **NVIDIA AV1**：若本地未检测到 `av1_nvenc` 支持，在用户选中该项时，展示 note 警告提示：“本地不支持此显卡加速编码，但仍会为您生成对应的 FFmpeg 指令。”
+  * **CPU AV1**：若用户选中该项，展示 note 警告提示：“CPU 转码 AV1 速度非常慢，不推荐使用，建议改用 H.264。”
 
 #### 3) 编码预设速度 (Preset Selection)
 * **H.264 (`libx264`) 选项**：`ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium` (默认), `slow`, `slower`, `veryslow`。
   * **FFmpeg 参数**：`-preset <selected_preset>`
 * **NVIDIA AV1 (`av1_nvenc`) 选项**：`p1` (最快), `p2`, `p3`, `p4`, `p5` (默认), `p6`, `p7` (最慢/最高质量)。
   * **FFmpeg 参数**：`-preset <selected_preset>`
-* **CPU AV1 (`libsvtav1`) 选项**：`4` (慢/高质量), `5`, `6` (默认/中等), `7`, `8` (快/低效率)。
+* **CPU AV1 (`libsvtav1`) 选项**：与 H.264 相同使用 `ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium` (默认), `slow`, `slower`, `veryslow`。
   * **FFmpeg 参数**：`-preset <selected_preset>`
 
 #### 4) 质量因子选取 (CRF / CQ)
-根据选择 of 视频分辨率，动态设定默认的质量推荐值：
+根据选择的视频分辨率，动态设定默认的质量推荐值：
 * **H.264 (`libx264`) - 采用 CRF 模式**：
   * Keep Original / 1080P: 默认 **`23`**
   * 720P: 默认 **`22`**
@@ -198,7 +201,7 @@ async function checkFFmpeg() {
 
 * **CPU AV1 编码示例：不支持 N 卡，转码为 1080P，音频转码为 128k：**
   ```bash
-  ffmpeg -i input.mp4 -c:v libsvtav1 -preset 6 -crf 28 -vf "scale=-2:1080" -c:a aac -b:a 128k 2606181741_abyx.mp4
+  ffmpeg -i input.mp4 -c:v libsvtav1 -preset medium -crf 28 -vf "scale=-2:1080" -c:a aac -b:a 128k 2606181741_abyx.mp4
   ```
 
 ---

@@ -51,32 +51,24 @@ async function main() {
     process.exit(1);
   }
 
-  // Detect NVIDIA AV1 support
-  let hasNvidiaGpu = false;
-  let hasNvidiaAv1 = false;
-  let hasSvtAv1 = false;
-  let av1Encoder = "";
+  // Detect encoder availability
+  let hasNvidiaAv1 = false; // local hw av1_nvenc works
+  let cpuAv1Encoder = "";   // best available CPU AV1 encoder name
 
   try {
     const encodersOutput = await $`ffmpeg -encoders`.text();
-    hasNvidiaGpu = encodersOutput.includes("h264_nvenc") || encodersOutput.includes("hevc_nvenc");
     if (encodersOutput.includes("av1_nvenc")) {
-      // Verify hardware capability
-      await $`ffmpeg -f lavfi -i color=c=black:s=64x64 -frames:v 1 -c:v av1_nvenc -f null -`.quiet();
-      hasNvidiaAv1 = true;
+      try {
+        await $`ffmpeg -f lavfi -i color=c=black:s=64x64 -frames:v 1 -c:v av1_nvenc -f null -`.quiet();
+        hasNvidiaAv1 = true;
+      } catch { /* av1_nvenc listed but hw not available */ }
     }
-    hasSvtAv1 = encodersOutput.includes("libsvtav1");
-    
-    if (hasNvidiaAv1) {
-      av1Encoder = "av1_nvenc";
-    } else if (hasSvtAv1) {
-      av1Encoder = "libsvtav1";
+    if (encodersOutput.includes("libsvtav1")) {
+      cpuAv1Encoder = "libsvtav1";
     } else if (encodersOutput.includes("libaom-av1")) {
-      av1Encoder = "libaom-av1";
+      cpuAv1Encoder = "libaom-av1";
     }
-  } catch {
-    hasNvidiaAv1 = false;
-  }
+  } catch { /* ignore encoder detection errors */ }
 
   // Display brief info
   let infoStr = `File: ${mediaInfo.filename}\n`;
@@ -119,28 +111,12 @@ async function main() {
   }
 
   // Prompt 2: Video Codec
+  // Always show all three options; warn post-selection if not locally supported.
   const codecOptions = [
-    { value: "h264", label: "H.264 (libx264)", hint: "Standard, highly compatible" }
+    { value: "h264",     label: "H.264 (libx264)",              hint: "Standard, highly compatible" },
+    { value: "av1_nvenc", label: "AV1 - NVIDIA (av1_nvenc)",    hint: hasNvidiaAv1 ? "Hardware accelerated" : "Not detected locally — command still generated" },
+    { value: "av1_cpu",  label: "AV1 - CPU (libsvtav1)",        hint: cpuAv1Encoder ? `encoder: ${cpuAv1Encoder}` : "Very slow, not recommended" },
   ];
-  
-  // "N卡不支持AV1时，直接不展示" -> if NVIDIA card is present on system but doesn't support AV1, do not show AV1 option at all.
-  // Otherwise, if no NVIDIA GPU is present but we have a CPU AV1 encoder, show it.
-  const showAv1Option = hasNvidiaAv1 || (!hasNvidiaGpu && !!av1Encoder);
-
-  if (showAv1Option) {
-    let encoderLabel = av1Encoder;
-    if (av1Encoder === "av1_nvenc") {
-      encoderLabel = "av1_nvenc (NVIDIA hardware accelerated)";
-      codecOptions.push({ value: "av1", label: "AV1", hint: `encoder: ${encoderLabel}` });
-    } else {
-      // "如果选择CPU转码AV1，明确提示很慢不推荐" -> Include warning directly in the label/hint of selection
-      codecOptions.push({ 
-        value: "av1", 
-        label: "AV1 (CPU encoder, very slow / not recommended)", 
-        hint: `encoder: ${encoderLabel}` 
-      });
-    }
-  }
 
   const codecChoice = await select({
     message: "Select video codec:",
@@ -153,11 +129,17 @@ async function main() {
     process.exit(0);
   }
 
-  // Extra warning if CPU AV1 is selected
-  if (codecChoice === "av1" && av1Encoder !== "av1_nvenc") {
+  // Post-selection warnings
+  if (codecChoice === "av1_nvenc" && !hasNvidiaAv1) {
     note(
-      "\x1b[33mWarning: CPU AV1 transcoding (SVT-AV1 / libaom) is extremely slow and not recommended.\nIf speed is important, please cancel and choose H.264 instead.\x1b[0m",
-      "Recommendation Warning"
+      "NVIDIA av1_nvenc is not available on this machine.\nThe FFmpeg command will still be generated — copy it to a machine with an NVIDIA GPU.",
+      "Local Compatibility Warning"
+    );
+  }
+  if (codecChoice === "av1_cpu") {
+    note(
+      "Warning: CPU AV1 transcoding is extremely slow and not recommended.\nConsider H.264 instead unless you specifically need AV1.",
+      "Performance Warning"
     );
   }
 
@@ -236,114 +218,111 @@ async function main() {
       finalQuality = crfChoice;
     }
 
-  } else {
-    // AV1
-    if (av1Encoder === "av1_nvenc") {
-      // Prompt 3c: Preset Selection for NVENC AV1
-      const preset = await select({
-        message: "Select NVIDIA AV1 NVENC Preset (Encoding speed/quality balance):",
-        options: [
-          { value: "p1", label: "p1 (fastest)" },
-          { value: "p2", label: "p2" },
-          { value: "p3", label: "p3" },
-          { value: "p4", label: "p4" },
-          { value: "p5", label: "p5 (medium)", hint: "default recommendation" },
-          { value: "p6", label: "p6" },
-          { value: "p7", label: "p7 (slowest / highest quality)" }
-        ],
-        initialValue: "p5"
-      });
+  } else if (codecChoice === "av1_nvenc") {
+    // Prompt 3c: Preset Selection for NVIDIA AV1 (p1-p7)
+    const preset = await select({
+      message: "Select NVIDIA AV1 (av1_nvenc) Preset:",
+      options: [
+        { value: "p1", label: "p1  — fastest" },
+        { value: "p2", label: "p2" },
+        { value: "p3", label: "p3" },
+        { value: "p4", label: "p4" },
+        { value: "p5", label: "p5  — medium", hint: "default recommendation" },
+        { value: "p6", label: "p6" },
+        { value: "p7", label: "p7  — highest quality" },
+      ],
+      initialValue: "p5"
+    });
+    if (isCancel(preset)) { cancel("Operation cancelled."); process.exit(0); }
+    presetChoice = preset;
 
-      if (isCancel(preset)) {
-        cancel("Operation cancelled.");
-        process.exit(0);
-      }
-      presetChoice = preset;
-    } else {
-      // Prompt 3d: Preset Selection for CPU AV1 (libsvtav1 or libaom-av1)
-      const preset = await select({
-        message: `Select CPU AV1 (${av1Encoder}) Preset (lower is slower/better quality):`,
-        options: [
-          { value: "4", label: "4 (slow / high quality)" },
-          { value: "5", label: "5" },
-          { value: "6", label: "6 (medium)", hint: "default recommendation" },
-          { value: "7", label: "7" },
-          { value: "8", label: "8 (fast / lower efficiency)" }
-        ],
-        initialValue: "6"
-      });
+    // CQ (Constant Quality) for av1_nvenc
+    let defaultCq = "36";
+    if (resolutionChoice === "720") defaultCq = "34";
+    else if (resolutionChoice === "480") defaultCq = "32";
 
-      if (isCancel(preset)) {
-        cancel("Operation cancelled.");
-        process.exit(0);
-      }
-      presetChoice = preset;
-    }
-
-    // Determine dynamic default CQ/CRF based on resolution selection for AV1
-    let defaultQuality = "28";
-    if (av1Encoder === "av1_nvenc") {
-      // Default cq is 36 for av1_nvenc
-      defaultQuality = "36";
-      if (resolutionChoice === "720") {
-        defaultQuality = "34";
-      } else if (resolutionChoice === "480") {
-        defaultQuality = "32";
-      }
-    } else {
-      if (resolutionChoice === "720") {
-        defaultQuality = "25";
-      } else if (resolutionChoice === "480") {
-        defaultQuality = "22";
-      }
-    }
-
-    const qualityLabel = av1Encoder === "av1_nvenc" ? "CQ" : "CRF";
-    // Prompt 3e: CQ/CRF selection for AV1
-    const qualityChoice = await select({
-      message: `Select ${qualityLabel} (Constant Quality factor, lower is higher quality):`,
-      options: av1Encoder === "av1_nvenc" ? [
+    const cqChoice = await select({
+      message: "Select CQ (lower = higher quality):",
+      options: [
         { value: "30", label: "30", hint: "High quality" },
         { value: "33", label: "33" },
         { value: "36", label: "36", hint: "Recommended default" },
         { value: "38", label: "38" },
-        { value: "42", label: "42", hint: "Lower quality / smaller size" },
-        { value: "custom", label: "Custom", hint: "Enter manually (0-51)" }
-      ] : [
+        { value: "42", label: "42", hint: "Lower quality / smaller file" },
+        { value: "custom", label: "Custom", hint: "Enter manually (0-51)" },
+      ],
+      initialValue: defaultCq
+    });
+    if (isCancel(cqChoice)) { cancel("Operation cancelled."); process.exit(0); }
+
+    if (cqChoice === "custom") {
+      const customCq = await text({
+        message: "Enter custom CQ value (0-51):",
+        placeholder: defaultCq,
+        validate(v) {
+          const n = parseInt(v, 10);
+          if (isNaN(n) || n < 0 || n > 51) return "Please enter a valid integer between 0 and 51";
+        }
+      });
+      if (isCancel(customCq)) { cancel("Operation cancelled."); process.exit(0); }
+      finalQuality = customCq;
+    } else {
+      finalQuality = cqChoice;
+    }
+
+  } else {
+    // codecChoice === "av1_cpu"
+    // Prompt 3d: Preset for CPU AV1 — same named strings as x264
+    const preset = await select({
+      message: `Select CPU AV1 Preset (encoding speed / quality):`,
+      options: [
+        { value: "ultrafast", label: "ultrafast" },
+        { value: "superfast", label: "superfast" },
+        { value: "veryfast",  label: "veryfast" },
+        { value: "faster",    label: "faster" },
+        { value: "fast",      label: "fast" },
+        { value: "medium",    label: "medium", hint: "default recommendation" },
+        { value: "slow",      label: "slow" },
+        { value: "slower",    label: "slower" },
+        { value: "veryslow",  label: "veryslow" },
+      ],
+      initialValue: "medium"
+    });
+    if (isCancel(preset)) { cancel("Operation cancelled."); process.exit(0); }
+    presetChoice = preset;
+
+    // CRF for CPU AV1
+    let defaultCrf = "28";
+    if (resolutionChoice === "720") defaultCrf = "25";
+    else if (resolutionChoice === "480") defaultCrf = "22";
+
+    const crfChoice = await select({
+      message: "Select CRF (lower = higher quality):",
+      options: [
         { value: "20", label: "20", hint: "High quality" },
         { value: "22", label: "22", hint: "Recommended for 480P" },
         { value: "25", label: "25", hint: "Recommended for 720P" },
         { value: "28", label: "28", hint: "Recommended for 1080P / Original" },
-        { value: "32", label: "32", hint: "Lower quality / smaller size" },
-        { value: "custom", label: "Custom", hint: "Enter manually (0-51)" }
+        { value: "32", label: "32", hint: "Lower quality / smaller file" },
+        { value: "custom", label: "Custom", hint: "Enter manually (0-51)" },
       ],
-      initialValue: defaultQuality
+      initialValue: defaultCrf
     });
+    if (isCancel(crfChoice)) { cancel("Operation cancelled."); process.exit(0); }
 
-    if (isCancel(qualityChoice)) {
-      cancel("Operation cancelled.");
-      process.exit(0);
-    }
-
-    if (qualityChoice === "custom") {
-      const customVal = await text({
-        message: `Enter custom ${qualityLabel} value (0-51):`,
-        placeholder: defaultQuality,
-        validate(value) {
-          const num = parseInt(value, 10);
-          if (isNaN(num) || num < 0 || num > 51) {
-            return "Please enter a valid integer between 0 and 51";
-          }
+    if (crfChoice === "custom") {
+      const customCrf = await text({
+        message: "Enter custom CRF value (0-51):",
+        placeholder: defaultCrf,
+        validate(v) {
+          const n = parseInt(v, 10);
+          if (isNaN(n) || n < 0 || n > 51) return "Please enter a valid integer between 0 and 51";
         }
       });
-
-      if (isCancel(customVal)) {
-        cancel("Operation cancelled.");
-        process.exit(0);
-      }
-      finalQuality = customVal;
+      if (isCancel(customCrf)) { cancel("Operation cancelled."); process.exit(0); }
+      finalQuality = customCrf;
     } else {
-      finalQuality = qualityChoice;
+      finalQuality = crfChoice;
     }
   }
 
@@ -391,26 +370,22 @@ async function main() {
   // 6. Build FFmpeg command parameters
   const args: string[] = ["ffmpeg"];
 
-  // Add hardware acceleration flag if using NVIDIA AV1
-  if (codecChoice === "av1" && av1Encoder === "av1_nvenc") {
+  // NVIDIA AV1: prepend hardware acceleration
+  if (codecChoice === "av1_nvenc") {
     args.push("-hwaccel", "cuda");
   }
 
   args.push("-i", `"${videoPath}"`);
 
-  // Video Codec / Encoder Selection
+  // Video codec args
   if (codecChoice === "h264") {
-    args.push("-c:v", "libx264");
-    args.push("-preset", presetChoice);
-    args.push("-crf", finalQuality);
+    args.push("-c:v", "libx264", "-preset", presetChoice, "-crf", finalQuality);
+  } else if (codecChoice === "av1_nvenc") {
+    args.push("-c:v", "av1_nvenc", "-preset", presetChoice, "-cq:v", finalQuality, "-tune", "hq", "-b:v", "0");
   } else {
-    args.push("-c:v", av1Encoder);
-    args.push("-preset", presetChoice);
-    if (av1Encoder === "av1_nvenc") {
-      args.push("-cq:v", finalQuality, "-tune", "hq", "-b:v", "0");
-    } else {
-      args.push("-crf", finalQuality);
-    }
+    // av1_cpu — use best available encoder name
+    const encoder = cpuAv1Encoder || "libsvtav1";
+    args.push("-c:v", encoder, "-preset", presetChoice, "-crf", finalQuality);
   }
 
   // Resolution scale filter (narrow side logic)
