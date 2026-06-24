@@ -1,5 +1,5 @@
 {
-  "name": "fvthlp",
+  "name": "@qiyon/fvthlp",
   "version": "1.0.0",
   "description": "FFmpeg Video Transform Helper",
   "type": "module",
