@@ -65,8 +65,6 @@ async function main() {
     }
     if (encodersOutput.includes("libsvtav1")) {
       cpuAv1Encoder = "libsvtav1";
-    } else if (encodersOutput.includes("libaom-av1")) {
-      cpuAv1Encoder = "libaom-av1";
     }
   } catch { /* ignore encoder detection errors */ }
 
@@ -115,7 +113,7 @@ async function main() {
   const codecOptions = [
     { value: "h264",     label: "H.264 (libx264)",              hint: "Standard, highly compatible" },
     { value: "av1_nvenc", label: "AV1 - NVIDIA (av1_nvenc)",    hint: hasNvidiaAv1 ? "Hardware accelerated" : "Not detected locally — command still generated" },
-    { value: "av1_cpu",  label: "AV1 - CPU (libsvtav1)",        hint: cpuAv1Encoder ? `encoder: ${cpuAv1Encoder}` : "Very slow, not recommended" },
+    { value: "av1_cpu",  label: "AV1 - CPU (libsvtav1)",        hint: cpuAv1Encoder ? "SVT-AV1, preset 1-13" : "Very slow, not recommended" },
   ];
 
   const codecChoice = await select({
@@ -271,22 +269,25 @@ async function main() {
     }
 
   } else {
-    // codecChoice === "av1_cpu"
-    // Prompt 3d: Preset for CPU AV1 — same named strings as x264
+    // Prompt 3d: Preset for CPU AV1 (libsvtav1) — numeric 1-13 (1=slowest/best, 13=fastest)
     const preset = await select({
-      message: `Select CPU AV1 Preset (encoding speed / quality):`,
+      message: `Select SVT-AV1 Preset (1=slowest/best quality, 13=fastest):`,
       options: [
-        { value: "ultrafast", label: "ultrafast" },
-        { value: "superfast", label: "superfast" },
-        { value: "veryfast",  label: "veryfast" },
-        { value: "faster",    label: "faster" },
-        { value: "fast",      label: "fast" },
-        { value: "medium",    label: "medium", hint: "default recommendation" },
-        { value: "slow",      label: "slow" },
-        { value: "slower",    label: "slower" },
-        { value: "veryslow",  label: "veryslow" },
+        { value: "1",  label: "1   — slowest / highest quality" },
+        { value: "2",  label: "2" },
+        { value: "3",  label: "3" },
+        { value: "4",  label: "4" },
+        { value: "5",  label: "5" },
+        { value: "6",  label: "6" },
+        { value: "7",  label: "7" },
+        { value: "8",  label: "8",  hint: "default recommendation" },
+        { value: "9",  label: "9" },
+        { value: "10", label: "10" },
+        { value: "11", label: "11" },
+        { value: "12", label: "12" },
+        { value: "13", label: "13  — fastest / lowest quality" },
       ],
-      initialValue: "medium"
+      initialValue: "8"
     });
     if (isCancel(preset)) { cancel("Operation cancelled."); process.exit(0); }
     presetChoice = preset;
@@ -383,9 +384,8 @@ async function main() {
   } else if (codecChoice === "av1_nvenc") {
     args.push("-c:v", "av1_nvenc", "-preset", presetChoice, "-cq:v", finalQuality, "-tune", "hq", "-b:v", "0");
   } else {
-    // av1_cpu — use best available encoder name
-    const encoder = cpuAv1Encoder || "libsvtav1";
-    args.push("-c:v", encoder, "-preset", presetChoice, "-crf", finalQuality);
+    // av1_cpu — always use libsvtav1
+    args.push("-c:v", "libsvtav1", "-preset", presetChoice, "-crf", finalQuality);
   }
 
   // Resolution scale filter (narrow side logic)

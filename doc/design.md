@@ -112,7 +112,7 @@ async function checkFFmpeg() {
 * **选项**：
   * `H.264` (默认，最兼容，使用 `libx264`)
   * `AV1 (NVIDIA av1_nvenc)` (NVIDIA GPU 硬件加速编码器)
-  * `AV1 (CPU encoder)` (SVT-AV1 或 libaom-av1 软件编码器)
+  * `AV1 (CPU encoder)` (仅使用 `libsvtav1` 软件编码器)
 * **编码器与显示判定逻辑**：
   * 所有的编码选项均在交互菜单中展示（包含 NVIDIA `av1_nvenc`，即使本地未检测到硬件支持），方便用户为其他设备生成转换参数。
   * **NVIDIA AV1**：若本地未检测到 `av1_nvenc` 支持，在用户选中该项时，展示 note 警告提示：“本地不支持此显卡加速编码，但仍会为您生成对应的 FFmpeg 指令。”
@@ -123,7 +123,7 @@ async function checkFFmpeg() {
   * **FFmpeg 参数**：`-preset <selected_preset>`
 * **NVIDIA AV1 (`av1_nvenc`) 选项**：`p1` (最快), `p2`, `p3`, `p4`, `p5` (默认), `p6`, `p7` (最慢/最高质量)。
   * **FFmpeg 参数**：`-preset <selected_preset>`
-* **CPU AV1 (`libsvtav1`) 选项**：与 H.264 相同使用 `ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium` (默认), `slow`, `slower`, `veryslow`。
+* **CPU AV1 (`libsvtav1`) 选项**：使用数字 `1` (最慢/最高质量) ~ `13` (最快)，默认 **`8`**。注意此 preset 与 H.264/NVENC 的命名体系完全不同。
   * **FFmpeg 参数**：`-preset <selected_preset>`
 
 #### 4) 质量因子选取 (CRF / CQ)
@@ -201,7 +201,7 @@ async function checkFFmpeg() {
 
 * **CPU AV1 编码示例：不支持 N 卡，转码为 1080P，音频转码为 128k：**
   ```bash
-  ffmpeg -i input.mp4 -c:v libsvtav1 -preset medium -crf 28 -vf "scale=-2:1080" -c:a aac -b:a 128k 2606181741_abyx.mp4
+  ffmpeg -i input.mp4 -c:v libsvtav1 -preset 8 -crf 28 -vf "scale=-2:1080" -c:a aac -b:a 128k 2606181741_abyx.mp4
   ```
 
 ---
