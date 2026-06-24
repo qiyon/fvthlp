@@ -335,37 +335,77 @@ async function main() {
 
     if (isOriginalAac && isLowBitrate) {
       note(
-        `Original audio is AAC and bitrate is ${mediaInfo.audio.bitrateKbps}kbps (< 150kbps).\nAutomatically selected 'copy' to preserve quality.`,
+        `Original audio is AAC and bitrate is ${mediaInfo.audio.bitrateKbps}kbps (< 150kbps). Defaulting to 'copy' to preserve quality.`,
         "Audio Transcode"
       );
+    }
+
+    const audioDefault = isOriginalAac && isLowBitrate ? "copy" : "aac-128k";
+    const audioChoice = await select({
+      message: "Select audio processing option:",
+      options: [
+        { value: "aac-128k", label: "Transcode to AAC (128k)", hint: "Recommended default" },
+        { value: "copy", label: "Copy (No re-encoding)" },
+        { value: "aac-192k", label: "Transcode to AAC (192k)" }
+      ],
+      initialValue: audioDefault
+    });
+
+    if (isCancel(audioChoice)) {
+      cancel("Operation cancelled.");
+      process.exit(0);
+    }
+
+    if (audioChoice === "copy") {
       audioParam = "-c:a copy";
-    } else {
-      const audioChoice = await select({
-        message: "Select audio processing option:",
-        options: [
-          { value: "aac-128k", label: "Transcode to AAC (128k)", hint: "Recommended default" },
-          { value: "copy", label: "Copy (No re-encoding)" },
-          { value: "aac-192k", label: "Transcode to AAC (192k)" }
-        ],
-        initialValue: "aac-128k"
-      });
-
-      if (isCancel(audioChoice)) {
-        cancel("Operation cancelled.");
-        process.exit(0);
-      }
-
-      if (audioChoice === "copy") {
-        audioParam = "-c:a copy";
-      } else if (audioChoice === "aac-128k") {
-        audioParam = "-c:a aac -b:a 128k";
-      } else if (audioChoice === "aac-192k") {
-        audioParam = "-c:a aac -b:a 192k";
-      }
+    } else if (audioChoice === "aac-128k") {
+      audioParam = "-c:a aac -b:a 128k";
+    } else if (audioChoice === "aac-192k") {
+      audioParam = "-c:a aac -b:a 192k";
     }
   } else {
     // No audio stream
     audioParam = "-an";
+  }
+
+  // Prompt 5: FPS adjustment
+  let fpsParam = "";
+  if (mediaInfo.video) {
+    const autoDown = mediaInfo.video.fps > 30;
+    if (autoDown) {
+      note(
+        `Original video is ${mediaInfo.video.fps} fps (> 30). Defaulting to 30 fps to reduce file size.\nYou can also keep the original frame rate below.`,
+        "FPS Adjustment"
+      );
+    }
+    const fpsOptions = [
+      { value: "keep", label: "Keep Original", hint: `${mediaInfo.video.fps} fps` },
+      { value: "30", label: "30 fps", hint: "Standard, widely compatible" },
+      { value: "24", label: "24 fps", hint: "Cinematic" },
+      { value: "custom", label: "Custom", hint: "Enter manually" },
+    ];
+    const fpsChoice = await select({
+      message: "Select target frame rate:",
+      options: fpsOptions,
+      initialValue: autoDown ? "30" : "keep",
+    });
+    if (isCancel(fpsChoice)) { cancel("Operation cancelled."); process.exit(0); }
+
+    if (fpsChoice === "custom") {
+      const customFps = await text({
+        message: "Enter custom frame rate (e.g. 30, 60, or a fraction like 30000/1001):",
+        placeholder: autoDown ? "30" : String(mediaInfo.video.fps),
+        validate(v) {
+          if (!v.trim()) return "Please enter a frame rate value";
+          const n = parseFloat(v);
+          if (isNaN(n) || n <= 0) return "Please enter a valid positive number";
+        }
+      });
+      if (isCancel(customFps)) { cancel("Operation cancelled."); process.exit(0); }
+      fpsParam = customFps;
+    } else if (fpsChoice !== "keep") {
+      fpsParam = fpsChoice;
+    }
   }
 
   // 6. Build FFmpeg command parameters
@@ -403,9 +443,9 @@ async function main() {
     }
   }
 
-  // FPS check and downsampling
-  if (mediaInfo.video && mediaInfo.video.fps > 30) {
-    args.push("-r", "30");
+  // FPS adjustment
+  if (fpsParam) {
+    args.push("-r", fpsParam);
   }
 
   // Audio param
