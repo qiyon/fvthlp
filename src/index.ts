@@ -58,10 +58,7 @@ async function main() {
   try {
     const encodersOutput = await $`ffmpeg -encoders`.text();
     if (encodersOutput.includes("av1_nvenc")) {
-      try {
-        await $`ffmpeg -f lavfi -i color=c=black:s=64x64 -frames:v 1 -c:v av1_nvenc -f null -`.quiet();
-        hasNvidiaAv1 = true;
-      } catch { /* av1_nvenc listed but hw not available */ }
+      hasNvidiaAv1 = true;
     }
     if (encodersOutput.includes("libsvtav1")) {
       cpuAv1Encoder = "libsvtav1";
