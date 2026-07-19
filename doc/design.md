@@ -45,20 +45,26 @@ graph TD
     F --> G["打印简要的音视频元数据信息 (含视频码率)"]
     G --> H["交互 1: 选择目标分辨率"]
     H --> I["交互 2: 选择视频编码格式与编码器"]
-    I --> J1{"选择 H.264?"}
-    J1 -- 是 --> J2["交互 3a: 选择 x264 Preset"]
-    J2 --> J3["交互 3b: 选择 CRF 值"]
-    I -- "选择 NVIDIA AV1" --> J4{"本地支持 av1_nvenc?"}
-    J4 -- 否 --> J4w["选择时提示不支持但允许继续"]
-    J4 -- 是 --> J5
-    J4w --> J5["交互 3c: 选择 NVENC Preset p1-p7"]
-    J5 --> J6["交互 3d: 选择 CQ 值"]
-    I -- "选择 CPU AV1" --> J7w["选择时明确提示很慢不推荐"]
-    J7w --> J7["交互 3e: 选择 CPU AV1 Preset"]
-    J7 --> J8["交互 3f: 选择 CRF 值"]
-    J3 --> K["交互 4: 决定音频转码策略"]
-    J6 --> K
-    J8 --> K
+    I --> Jc{"选择 H.264 (CPU)?"}
+    Jc -- 是 --> Jc1["交互 3a: 选择 x264 Preset"]
+    Jc1 --> Jc2["交互 3b: 选择 CRF 值"]
+    I -- "选择 NVIDIA H.264" --> Jh{"本地支持 h264_nvenc?"}
+    Jh -- 否 --> Jhw["选择时提示不支持但允许继续"]
+    Jh -- 是 --> Jh1
+    Jhw --> Jh1["交互: 选择 NVENC H.264 Preset p1-p7"]
+    Jh1 --> Jh2["交互: 选择 H.264 CQ 值"]
+    I -- "选择 NVIDIA AV1" --> Ja{"本地支持 av1_nvenc?"}
+    Ja -- 否 --> Jaw["选择时提示不支持但允许继续"]
+    Ja -- 是 --> Ja1
+    Jaw --> Ja1["交互: 选择 NVENC AV1 Preset p1-p7"]
+    Ja1 --> Ja2["交互: 选择 AV1 CQ 值"]
+    I -- "选择 CPU AV1" --> Jsw["选择时明确提示很慢不推荐"]
+    Jsw --> Js1["交互: 选择 CPU AV1 Preset"]
+    Js1 --> Js2["交互: 选择 CRF 值"]
+    Jc2 --> K["交互 4: 决定音频转码策略"]
+    Jh2 --> K
+    Ja2 --> K
+    Js2 --> K
     K --> L["生成随机构建的目标输出文件名"]
     L --> M["拼装并输出最终 ffmpeg 命令行"]
 ```
@@ -110,16 +116,20 @@ async function checkFFmpeg() {
 
 #### 2) 视频编码格式与编码器选择 (Video Codec)
 * **选项**：
-  * `H.264` (默认，最兼容，使用 `libx264`)
+  * `H.264 (CPU encoder)` (默认，最兼容，使用 `libx264`)
+  * `H.264 (NVIDIA h264_nvenc)` (NVIDIA GPU 硬件加速编码器)
   * `AV1 (NVIDIA av1_nvenc)` (NVIDIA GPU 硬件加速编码器)
   * `AV1 (CPU encoder)` (仅使用 `libsvtav1` 软件编码器)
 * **编码器与显示判定逻辑**：
-  * 所有的编码选项均在交互菜单中展示（包含 NVIDIA `av1_nvenc`，即使本地未检测到硬件支持），方便用户为其他设备生成转换参数。
+  * 所有的编码选项均在交互菜单中展示（包含 NVIDIA `h264_nvenc` 和 `av1_nvenc`，即使本地未检测到硬件支持），方便用户为其他设备生成转换参数。
+  * **NVIDIA H.264**：若本地未检测到 `h264_nvenc` 支持，在用户选中该项时，展示 note 警告提示：“本地不支持此显卡加速编码，但仍会为您生成对应的 FFmpeg 指令。”
   * **NVIDIA AV1**：若本地未检测到 `av1_nvenc` 支持，在用户选中该项时，展示 note 警告提示：“本地不支持此显卡加速编码，但仍会为您生成对应的 FFmpeg 指令。”
   * **CPU AV1**：若用户选中该项，展示 note 警告提示：“CPU 转码 AV1 速度非常慢，不推荐使用，建议改用 H.264。”
 
 #### 3) 编码预设速度 (Preset Selection)
-* **H.264 (`libx264`) 选项**：`ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium` (默认), `slow`, `slower`, `veryslow`。
+* **H.264 CPU (`libx264`) 选项**：`ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium` (默认), `slow`, `slower`, `veryslow`。
+  * **FFmpeg 参数**：`-preset <selected_preset>`
+* **H.264 NVIDIA (`h264_nvenc`) 选项**：`p1` (最快), `p2`, `p3`, `p4`, `p5`, `p6` (默认), `p7` (最慢/最高质量)。
   * **FFmpeg 参数**：`-preset <selected_preset>`
 * **NVIDIA AV1 (`av1_nvenc`) 选项**：`p1` (最快), `p2`, `p3`, `p4`, `p5` (默认), `p6`, `p7` (最慢/最高质量)。
   * **FFmpeg 参数**：`-preset <selected_preset>`
@@ -128,12 +138,18 @@ async function checkFFmpeg() {
 
 #### 4) 质量因子选取 (CRF / CQ)
 根据选择的视频分辨率，动态设定默认的质量推荐值：
-* **H.264 (`libx264`) - 采用 CRF 模式**：
+* **H.264 CPU (`libx264`) - 采用 CRF 模式**：
   * Keep Original / 1080P: 默认 **`23`**
   * 720P: 默认 **`22`**
   * 480P: 默认 **`20`**
   * **选项**：`18`, `20`, `22`, `23`, `26`, `自定义(0-51)`
   * **FFmpeg 参数**：`-crf <crf_value>`
+* **H.264 NVIDIA (`h264_nvenc`) - 采用 CQ 模式**：
+  * Keep Original / 1080P: 默认 **`30`**
+  * 720P: 默认 **`28`**
+  * 480P: 默认 **`26`**
+  * **选项**：`24`, `26`, `28`, `30`, `33`, `自定义(0-51)`
+  * **FFmpeg 参数**：`-cq:v <cq_value> -tune hq`
 * **NVIDIA AV1 (`av1_nvenc`) - 采用 VBR + CQ 模式**：
   * Keep Original / 1080P: 默认 **`36`**
   * 720P: 默认 **`34`**
@@ -189,9 +205,14 @@ async function checkFFmpeg() {
 
 拼装出的命令行样例如下：
 
-* **H.264 编码示例：原视频为横屏（如 1920x1080），转码为 720P，原视频帧率 60 fps，音频转码为 128k：**
+* **H.264 CPU 编码示例：原视频为横屏（如 1920x1080），转码为 720P，原视频帧率 60 fps，音频转码为 128k：**
   ```bash
   ffmpeg -i input.mp4 -c:v libx264 -preset medium -crf 22 -vf "scale=-2:720" -r 30 -c:a aac -b:a 128k 2606181741_abyx.mp4
+  ```
+
+* **H.264 NVIDIA 编码示例：N 卡，转码为 1080P，原视频帧率 60 fps，音频转码为 128k：**
+  ```bash
+  ffmpeg -hwaccel cuda -i input.mp4 -c:v h264_nvenc -preset p6 -cq:v 30 -tune hq -vf "scale=-2:1080" -r 30 -c:a aac -b:a 128k 2606181741_abyx.mp4
   ```
 
 * **NVIDIA AV1 编码示例：支持 N 卡，转码为 720P，音频 copy 模式：**

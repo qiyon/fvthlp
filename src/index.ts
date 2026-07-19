@@ -52,11 +52,15 @@ async function main() {
   }
 
   // Detect encoder availability
+  let hasNvidiaH264 = false;
   let hasNvidiaAv1 = false; // local hw av1_nvenc works
   let cpuAv1Encoder = "";   // best available CPU AV1 encoder name
 
   try {
     const encodersOutput = await $`ffmpeg -encoders`.text();
+    if (encodersOutput.includes("h264_nvenc")) {
+      hasNvidiaH264 = true;
+    }
     if (encodersOutput.includes("av1_nvenc")) {
       hasNvidiaAv1 = true;
     }
@@ -108,9 +112,10 @@ async function main() {
   // Prompt 2: Video Codec
   // Always show all three options; warn post-selection if not locally supported.
   const codecOptions = [
-    { value: "h264",     label: "H.264 (libx264)",              hint: "Standard, highly compatible" },
-    { value: "av1_nvenc", label: "AV1 - NVIDIA (av1_nvenc)",    hint: hasNvidiaAv1 ? "Hardware accelerated" : "Not detected locally — command still generated" },
-    { value: "av1_cpu",  label: "AV1 - CPU (libsvtav1)",        hint: cpuAv1Encoder ? "SVT-AV1, preset 1-13" : "Very slow, not recommended" },
+    { value: "h264",        label: "H.264 - CPU (libx264)",          hint: "Standard, highly compatible" },
+    { value: "h264_nvenc",  label: "H.264 - NVIDIA (h264_nvenc)",    hint: hasNvidiaH264 ? "Hardware accelerated" : "Not detected locally — command still generated" },
+    { value: "av1_nvenc",   label: "AV1 - NVIDIA (av1_nvenc)",       hint: hasNvidiaAv1 ? "Hardware accelerated" : "Not detected locally — command still generated" },
+    { value: "av1_cpu",     label: "AV1 - CPU (libsvtav1)",          hint: cpuAv1Encoder ? "SVT-AV1, preset 1-13" : "Very slow, not recommended" },
   ];
 
   const codecChoice = await select({
@@ -125,6 +130,12 @@ async function main() {
   }
 
   // Post-selection warnings
+  if (codecChoice === "h264_nvenc" && !hasNvidiaH264) {
+    note(
+      "NVIDIA h264_nvenc is not available on this machine.\nThe FFmpeg command will still be generated — copy it to a machine with an NVIDIA GPU.",
+      "Local Compatibility Warning"
+    );
+  }
   if (codecChoice === "av1_nvenc" && !hasNvidiaAv1) {
     note(
       "NVIDIA av1_nvenc is not available on this machine.\nThe FFmpeg command will still be generated — copy it to a machine with an NVIDIA GPU.",
@@ -211,6 +222,56 @@ async function main() {
       finalQuality = customCrf;
     } else {
       finalQuality = crfChoice;
+    }
+
+  } else if (codecChoice === "h264_nvenc") {
+    const preset = await select({
+      message: "Select NVIDIA H.264 (h264_nvenc) Preset:",
+      options: [
+        { value: "p1", label: "p1  — fastest" },
+        { value: "p2", label: "p2" },
+        { value: "p3", label: "p3" },
+        { value: "p4", label: "p4" },
+        { value: "p5", label: "p5  — medium" },
+        { value: "p6", label: "p6  — default", hint: "default recommendation" },
+        { value: "p7", label: "p7  — highest quality" },
+      ],
+      initialValue: "p6"
+    });
+    if (isCancel(preset)) { cancel("Operation cancelled."); process.exit(0); }
+    presetChoice = preset;
+
+    let defaultCq = "30";
+    if (resolutionChoice === "720") defaultCq = "28";
+    else if (resolutionChoice === "480") defaultCq = "26";
+
+    const cqChoice = await select({
+      message: "Select CQ (lower = higher quality):",
+      options: [
+        { value: "24", label: "24", hint: "High quality" },
+        { value: "26", label: "26", hint: "Recommended for 480P" },
+        { value: "28", label: "28", hint: "Recommended for 720P" },
+        { value: "30", label: "30", hint: "Recommended for 1080P / Original" },
+        { value: "33", label: "33", hint: "Lower quality / smaller file" },
+        { value: "custom", label: "Custom", hint: "Enter manually (0-51)" },
+      ],
+      initialValue: defaultCq
+    });
+    if (isCancel(cqChoice)) { cancel("Operation cancelled."); process.exit(0); }
+
+    if (cqChoice === "custom") {
+      const customCq = await text({
+        message: "Enter custom CQ value (0-51):",
+        placeholder: defaultCq,
+        validate(v) {
+          const n = parseInt(v, 10);
+          if (isNaN(n) || n < 0 || n > 51) return "Please enter a valid integer between 0 and 51";
+        }
+      });
+      if (isCancel(customCq)) { cancel("Operation cancelled."); process.exit(0); }
+      finalQuality = customCq;
+    } else {
+      finalQuality = cqChoice;
     }
 
   } else if (codecChoice === "av1_nvenc") {
@@ -408,8 +469,8 @@ async function main() {
   // 6. Build FFmpeg command parameters
   const args: string[] = ["ffmpeg"];
 
-  // NVIDIA AV1: prepend hardware acceleration
-  if (codecChoice === "av1_nvenc") {
+  // NVIDIA hardware acceleration
+  if (codecChoice === "h264_nvenc" || codecChoice === "av1_nvenc") {
     args.push("-hwaccel", "cuda");
   }
 
@@ -418,6 +479,8 @@ async function main() {
   // Video codec args
   if (codecChoice === "h264") {
     args.push("-c:v", "libx264", "-preset", presetChoice, "-crf", finalQuality);
+  } else if (codecChoice === "h264_nvenc") {
+    args.push("-c:v", "h264_nvenc", "-preset", presetChoice, "-cq:v", finalQuality, "-tune", "hq");
   } else if (codecChoice === "av1_nvenc") {
     args.push("-c:v", "av1_nvenc", "-preset", presetChoice, "-cq:v", finalQuality, "-tune", "hq", "-b:v", "0");
   } else {
