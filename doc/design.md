@@ -137,31 +137,34 @@ async function checkFFmpeg() {
   * **FFmpeg 参数**：`-preset <selected_preset>`
 
 #### 4) 质量因子选取 (CRF / CQ)
-根据选择的视频分辨率，动态设定默认的质量推荐值：
+根据目标分辨率动态设定默认质量推荐值。选择 `Keep Original` 时不进行缩放，但应根据原视频窄边归档：窄边 `≤480` 使用 480P 档、`481-720` 使用 720P 档、`>720` 使用 1080P+ 档。不同编码器的 CRF/CQ 数值体系不可直接横向比较，以下数值定位为兼顾视觉质量与文件大小的经验起点。
 * **H.264 CPU (`libx264`) - 采用 CRF 模式**：
-  * Keep Original / 1080P: 默认 **`23`**
+  * 1080P+: 默认 **`23`**
   * 720P: 默认 **`22`**
   * 480P: 默认 **`20`**
   * **选项**：`18`, `20`, `22`, `23`, `26`, `自定义(0-51)`
   * **FFmpeg 参数**：`-crf <crf_value>`
-* **H.264 NVIDIA (`h264_nvenc`) - 采用 CQ 模式**：
-  * Keep Original / 1080P: 默认 **`30`**
-  * 720P: 默认 **`28`**
-  * 480P: 默认 **`26`**
+* **H.264 NVIDIA (`h264_nvenc`) - 采用 VBR + CQ 模式**：
+  * 1080P+: 默认 **`28`**
+  * 720P: 默认 **`26`**
+  * 480P: 默认 **`24`**
   * **选项**：`24`, `26`, `28`, `30`, `33`, `自定义(0-51)`
-  * **FFmpeg 参数**：`-cq:v <cq_value> -tune hq`
+  * **FFmpeg 参数**：`-rc:v vbr -cq:v <cq_value> -b:v 0 -tune hq`
 * **NVIDIA AV1 (`av1_nvenc`) - 采用 VBR + CQ 模式**：
-  * Keep Original / 1080P: 默认 **`36`**
+  * 1080P+: 默认 **`36`**
   * 720P: 默认 **`34`**
   * 480P: 默认 **`32`**
-  * **选项**：`30`, `33`, `36`, `38`, `42`, `自定义(0-51)`
-  * **FFmpeg 参数**：`-rc:v vbr -cq:v <cq_value> -tune hq -b:v 0`
+  * **选项**：`30`, `32`, `34`, `36`, `38`, `42`, `自定义(0-63，其中0表示自动)`
+  * **FFmpeg 参数**：`-rc:v vbr -cq:v <cq_value> -b:v 0 -tune hq`
 * **CPU AV1 (`libsvtav1`) - 采用 CRF 模式**：
-  * Keep Original / 1080P: 默认 **`28`**
-  * 720P: 默认 **`25`**
-  * 480P: 默认 **`22`**
-  * **选项**：`20`, `22`, `25`, `28`, `32`, `自定义(0-51)`
+  * 1080P+: 默认 **`32`**
+  * 720P: 默认 **`30`**
+  * 480P: 默认 **`28`**
+  * **选项**：`24`, `28`, `30`, `32`, `35`, `自定义(1-63)`
   * **FFmpeg 参数**：`-crf <crf_value>`
+  * **兼容性说明**：较新的 SVT-AV1 原生 CRF 上限可达到 70，但不同 FFmpeg/SVT-AV1 组合暴露的范围并不完全一致；工具采用 `1-63` 作为兼容范围。
+
+> **参数依据**：NVENC 的目标质量模式使用 VBR + CQ；H.264 CQ 范围为 `0-51`，AV1 CQ 范围为 `0-63`，其中 `0` 表示自动。SVT-AV1 官方将 1080P 的 CRF 30 作为常用起点；本工具在较快的 preset 8 下默认使用 CRF 32，以取得更均衡的体积。上述默认值是通用经验起点，实际效果仍会受到噪声、运动复杂度、位深和编码器/驱动版本影响。
 
 #### 5) 音频转码策略 (Audio Transcode)
 * **核心规则**：
@@ -212,17 +215,17 @@ async function checkFFmpeg() {
 
 * **H.264 NVIDIA 编码示例：N 卡，转码为 1080P，原视频帧率 60 fps，音频转码为 128k：**
   ```bash
-  ffmpeg -hwaccel cuda -i input.mp4 -c:v h264_nvenc -preset p6 -cq:v 30 -tune hq -vf "scale=-2:1080" -r 30 -c:a aac -b:a 128k 2606181741_abyx.mp4
+  ffmpeg -hwaccel cuda -i input.mp4 -c:v h264_nvenc -preset p6 -rc:v vbr -cq:v 28 -b:v 0 -tune hq -vf "scale=-2:1080" -r 30 -c:a aac -b:a 128k 2606181741_abyx.mp4
   ```
 
 * **NVIDIA AV1 编码示例：支持 N 卡，转码为 720P，音频 copy 模式：**
   ```bash
-  ffmpeg -hwaccel cuda -i input.mp4 -c:v av1_nvenc -preset p5 -cq:v 36 -tune hq -b:v 0 -vf "scale=-2:720" -c:a copy 2606181741_abyx.mp4
+  ffmpeg -hwaccel cuda -i input.mp4 -c:v av1_nvenc -preset p5 -rc:v vbr -cq:v 34 -b:v 0 -tune hq -vf "scale=-2:720" -c:a copy 2606181741_abyx.mp4
   ```
 
 * **CPU AV1 编码示例：不支持 N 卡，转码为 1080P，音频转码为 128k：**
   ```bash
-  ffmpeg -i input.mp4 -c:v libsvtav1 -preset 8 -crf 28 -vf "scale=-2:1080" -c:a aac -b:a 128k 2606181741_abyx.mp4
+  ffmpeg -i input.mp4 -c:v libsvtav1 -preset 8 -crf 32 -vf "scale=-2:1080" -c:a aac -b:a 128k 2606181741_abyx.mp4
   ```
 
 ---

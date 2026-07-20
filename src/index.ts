@@ -13,6 +13,26 @@ import { $ } from "bun";
 import { checkFFmpeg, fileExists, generateOutputFilename, formatBytes } from "./utils";
 import { getMediaInfo } from "./ffprobe";
 
+type QualityResolution = "1080" | "720" | "480";
+
+function getQualityResolution(
+  resolutionChoice: string,
+  video: { width: number; height: number } | null,
+): QualityResolution {
+  if (resolutionChoice === "720" || resolutionChoice === "480") {
+    return resolutionChoice;
+  }
+
+  if (resolutionChoice === "1080" || !video) {
+    return "1080";
+  }
+
+  const narrowSide = Math.min(video.width, video.height);
+  if (narrowSide <= 480) return "480";
+  if (narrowSide <= 720) return "720";
+  return "1080";
+}
+
 async function main() {
   // 1. Argument validation
   const videoPath = Bun.argv[2];
@@ -151,6 +171,7 @@ async function main() {
 
   let presetChoice = "";
   let finalQuality = "";
+  const qualityResolution = getQualityResolution(resolutionChoice, mediaInfo.video);
 
   if (codecChoice === "h264") {
     // Prompt 3a: Preset Selection for H.264
@@ -178,9 +199,9 @@ async function main() {
 
     // Determine dynamic default CRF based on resolution selection
     let defaultCrf = "23";
-    if (resolutionChoice === "720") {
+    if (qualityResolution === "720") {
       defaultCrf = "22";
-    } else if (resolutionChoice === "480") {
+    } else if (qualityResolution === "480") {
       defaultCrf = "20";
     }
 
@@ -191,7 +212,7 @@ async function main() {
         { value: "18", label: "18", hint: "High quality" },
         { value: "20", label: "20", hint: "Recommended for 480P" },
         { value: "22", label: "22", hint: "Recommended for 720P" },
-        { value: "23", label: "23", hint: "Recommended for 1080P / Original" },
+        { value: "23", label: "23", hint: "Recommended for 1080P+" },
         { value: "26", label: "26", hint: "Lower quality / smaller size" },
         { value: "custom", label: "Custom", hint: "Enter manually (0-51)" }
       ],
@@ -241,17 +262,17 @@ async function main() {
     if (isCancel(preset)) { cancel("Operation cancelled."); process.exit(0); }
     presetChoice = preset;
 
-    let defaultCq = "30";
-    if (resolutionChoice === "720") defaultCq = "28";
-    else if (resolutionChoice === "480") defaultCq = "26";
+    let defaultCq = "28";
+    if (qualityResolution === "720") defaultCq = "26";
+    else if (qualityResolution === "480") defaultCq = "24";
 
     const cqChoice = await select({
       message: "Select CQ (lower = higher quality):",
       options: [
-        { value: "24", label: "24", hint: "High quality" },
-        { value: "26", label: "26", hint: "Recommended for 480P" },
-        { value: "28", label: "28", hint: "Recommended for 720P" },
-        { value: "30", label: "30", hint: "Recommended for 1080P / Original" },
+        { value: "24", label: "24", hint: "Recommended for 480P" },
+        { value: "26", label: "26", hint: "Recommended for 720P" },
+        { value: "28", label: "28", hint: "Recommended for 1080P+" },
+        { value: "30", label: "30" },
         { value: "33", label: "33", hint: "Lower quality / smaller file" },
         { value: "custom", label: "Custom", hint: "Enter manually (0-51)" },
       ],
@@ -294,18 +315,19 @@ async function main() {
 
     // CQ (Constant Quality) for av1_nvenc
     let defaultCq = "36";
-    if (resolutionChoice === "720") defaultCq = "34";
-    else if (resolutionChoice === "480") defaultCq = "32";
+    if (qualityResolution === "720") defaultCq = "34";
+    else if (qualityResolution === "480") defaultCq = "32";
 
     const cqChoice = await select({
       message: "Select CQ (lower = higher quality):",
       options: [
         { value: "30", label: "30", hint: "High quality" },
-        { value: "33", label: "33" },
-        { value: "36", label: "36", hint: "Recommended default" },
+        { value: "32", label: "32", hint: "Recommended for 480P" },
+        { value: "34", label: "34", hint: "Recommended for 720P" },
+        { value: "36", label: "36", hint: "Recommended for 1080P+" },
         { value: "38", label: "38" },
         { value: "42", label: "42", hint: "Lower quality / smaller file" },
-        { value: "custom", label: "Custom", hint: "Enter manually (0-51)" },
+        { value: "custom", label: "Custom", hint: "Enter manually (0-63; 0=auto)" },
       ],
       initialValue: defaultCq
     });
@@ -313,11 +335,11 @@ async function main() {
 
     if (cqChoice === "custom") {
       const customCq = await text({
-        message: "Enter custom CQ value (0-51):",
+        message: "Enter custom CQ value (0-63; 0=auto):",
         placeholder: defaultCq,
         validate(v) {
           const n = parseInt(v, 10);
-          if (isNaN(n) || n < 0 || n > 51) return "Please enter a valid integer between 0 and 51";
+          if (isNaN(n) || n < 0 || n > 63) return "Please enter a valid integer between 0 and 63";
         }
       });
       if (isCancel(customCq)) { cancel("Operation cancelled."); process.exit(0); }
@@ -351,19 +373,19 @@ async function main() {
     presetChoice = preset;
 
     // CRF for CPU AV1
-    let defaultCrf = "28";
-    if (resolutionChoice === "720") defaultCrf = "25";
-    else if (resolutionChoice === "480") defaultCrf = "22";
+    let defaultCrf = "32";
+    if (qualityResolution === "720") defaultCrf = "30";
+    else if (qualityResolution === "480") defaultCrf = "28";
 
     const crfChoice = await select({
       message: "Select CRF (lower = higher quality):",
       options: [
-        { value: "20", label: "20", hint: "High quality" },
-        { value: "22", label: "22", hint: "Recommended for 480P" },
-        { value: "25", label: "25", hint: "Recommended for 720P" },
-        { value: "28", label: "28", hint: "Recommended for 1080P / Original" },
-        { value: "32", label: "32", hint: "Lower quality / smaller file" },
-        { value: "custom", label: "Custom", hint: "Enter manually (0-51)" },
+        { value: "24", label: "24", hint: "High quality" },
+        { value: "28", label: "28", hint: "Recommended for 480P" },
+        { value: "30", label: "30", hint: "Recommended for 720P" },
+        { value: "32", label: "32", hint: "Recommended for 1080P+" },
+        { value: "35", label: "35", hint: "Lower quality / smaller file" },
+        { value: "custom", label: "Custom", hint: "Enter manually (1-63)" },
       ],
       initialValue: defaultCrf
     });
@@ -371,11 +393,11 @@ async function main() {
 
     if (crfChoice === "custom") {
       const customCrf = await text({
-        message: "Enter custom CRF value (0-51):",
+        message: "Enter custom CRF value (1-63):",
         placeholder: defaultCrf,
         validate(v) {
           const n = parseInt(v, 10);
-          if (isNaN(n) || n < 0 || n > 51) return "Please enter a valid integer between 0 and 51";
+          if (isNaN(n) || n < 1 || n > 63) return "Please enter a valid integer between 1 and 63";
         }
       });
       if (isCancel(customCrf)) { cancel("Operation cancelled."); process.exit(0); }
@@ -480,9 +502,9 @@ async function main() {
   if (codecChoice === "h264") {
     args.push("-c:v", "libx264", "-preset", presetChoice, "-crf", finalQuality);
   } else if (codecChoice === "h264_nvenc") {
-    args.push("-c:v", "h264_nvenc", "-preset", presetChoice, "-cq:v", finalQuality, "-tune", "hq");
+    args.push("-c:v", "h264_nvenc", "-preset", presetChoice, "-rc:v", "vbr", "-cq:v", finalQuality, "-b:v", "0", "-tune", "hq");
   } else if (codecChoice === "av1_nvenc") {
-    args.push("-c:v", "av1_nvenc", "-preset", presetChoice, "-cq:v", finalQuality, "-tune", "hq", "-b:v", "0");
+    args.push("-c:v", "av1_nvenc", "-preset", presetChoice, "-rc:v", "vbr", "-cq:v", finalQuality, "-b:v", "0", "-tune", "hq");
   } else {
     // av1_cpu — always use libsvtav1
     args.push("-c:v", "libsvtav1", "-preset", presetChoice, "-crf", finalQuality);
