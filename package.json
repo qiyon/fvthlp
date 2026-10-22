@@ -11,6 +11,6 @@
     "start": "bun run src/index.ts"
   },
   "dependencies": {
-    "@clack/prompts": "^0.7.0"
+    "@clack/prompts": "^1.8.1"
   }
 }
